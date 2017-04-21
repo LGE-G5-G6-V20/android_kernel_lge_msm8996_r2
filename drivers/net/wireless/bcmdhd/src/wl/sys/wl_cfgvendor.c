@@ -1043,7 +1043,343 @@ wl_cfgvendor_set_batch_scan_cfg(struct wiphy *wiphy,
 
 	return err;
 }
+#endif /* GSCAN_SUPPORT */
+#ifdef RTT_SUPPORT
+void
+wl_cfgvendor_rtt_evt(void *ctx, void *rtt_data)
+{
+	struct wireless_dev *wdev = (struct wireless_dev *)ctx;
+	struct wiphy *wiphy;
+	struct sk_buff *skb;
+	uint32 complete = 0;
+	gfp_t kflags;
+	rtt_result_t *rtt_result;
+	rtt_results_header_t *rtt_header;
+	struct list_head *rtt_cache_list;
+	struct nlattr *rtt_nl_hdr;
+	wiphy = wdev->wiphy;
 
+	WL_DBG(("In\n"));
+	/* Push the data to the skb */
+	if (!rtt_data) {
+		WL_ERR(("rtt_data is NULL\n"));
+		return;
+	}
+	rtt_cache_list = (struct list_head *)rtt_data;
+	kflags = in_atomic() ? GFP_ATOMIC : GFP_KERNEL;
+	if (list_empty(rtt_cache_list)) {
+#if (defined(CONFIG_ARCH_QCOM) && defined(SUPPORT_WDEV_CFG80211_VENDOR_EVENT_ALLOC)) || \
+	LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
+		skb = cfg80211_vendor_event_alloc(wiphy, NULL, 100,
+			GOOGLE_RTT_COMPLETE_EVENT, kflags);
+#else
+		skb = cfg80211_vendor_event_alloc(wiphy, 100, GOOGLE_RTT_COMPLETE_EVENT, kflags);
+#endif /* (defined(CONFIG_ARCH_QCOM) && defined(SUPPORT_WDEV_CFG80211_VENDOR_EVENT_ALLOC)) || */
+		/* LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0) */
+		if (!skb) {
+			WL_ERR(("skb alloc failed"));
+			return;
+		}
+		complete = 1;
+		nla_put_u32(skb, RTT_ATTRIBUTE_RESULTS_COMPLETE, complete);
+		cfg80211_vendor_event(skb, kflags);
+		return;
+	}
+	list_for_each_entry(rtt_header, rtt_cache_list, list) {
+		/* Alloc the SKB for vendor_event */
+#if (defined(CONFIG_ARCH_QCOM) && defined(SUPPORT_WDEV_CFG80211_VENDOR_EVENT_ALLOC)) || \
+	LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
+		skb = cfg80211_vendor_event_alloc(wiphy, NULL, rtt_header->result_tot_len + 100,
+			GOOGLE_RTT_COMPLETE_EVENT, kflags);
+#else
+		skb = cfg80211_vendor_event_alloc(wiphy, rtt_header->result_tot_len + 100,
+			GOOGLE_RTT_COMPLETE_EVENT, kflags);
+#endif /* (defined(CONFIG_ARCH_QCOM) && defined(SUPPORT_WDEV_CFG80211_VENDOR_EVENT_ALLOC)) || */
+		/* LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0) */
+		if (!skb) {
+			WL_ERR(("skb alloc failed"));
+			return;
+		}
+		if (list_is_last(&rtt_header->list, rtt_cache_list)) {
+			complete = 1;
+		}
+		nla_put_u32(skb, RTT_ATTRIBUTE_RESULTS_COMPLETE, complete);
+		rtt_nl_hdr = nla_nest_start(skb, RTT_ATTRIBUTE_RESULTS_PER_TARGET);
+		if (!rtt_nl_hdr) {
+			WL_ERR(("rtt_nl_hdr is NULL\n"));
+			break;
+		}
+		nla_put(skb, RTT_ATTRIBUTE_TARGET_MAC, ETHER_ADDR_LEN, &rtt_header->peer_mac);
+		nla_put_u32(skb, RTT_ATTRIBUTE_RESULT_CNT, rtt_header->result_cnt);
+		list_for_each_entry(rtt_result, &rtt_header->result_list, list) {
+			nla_put(skb, RTT_ATTRIBUTE_RESULT,
+				rtt_result->report_len, &rtt_result->report);
+		}
+		nla_nest_end(skb, rtt_nl_hdr);
+		cfg80211_vendor_event(skb, kflags);
+	}
+}
+
+static int
+wl_cfgvendor_rtt_set_config(struct wiphy *wiphy, struct wireless_dev *wdev,
+	const void *data, int len) {
+	int err = 0, rem, rem1, rem2, type;
+	int target_cnt;
+	rtt_config_params_t rtt_param;
+	rtt_target_info_t* rtt_target = NULL;
+	const struct nlattr *iter, *iter1, *iter2;
+	int8 eabuf[ETHER_ADDR_STR_LEN];
+	int8 chanbuf[CHANSPEC_STR_LEN];
+	int32 feature_set = 0;
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	rtt_capabilities_t capability;
+	feature_set = dhd_dev_get_feature_set(bcmcfg_to_prmry_ndev(cfg));
+
+	WL_DBG(("In\n"));
+	err = dhd_dev_rtt_register_noti_callback(wdev->netdev, wdev, wl_cfgvendor_rtt_evt);
+	if (err < 0) {
+		WL_ERR(("failed to register rtt_noti_callback\n"));
+		goto exit;
+	}
+	err = dhd_dev_rtt_capability(bcmcfg_to_prmry_ndev(cfg), &capability);
+	if (err < 0) {
+		WL_ERR(("failed to get the capability\n"));
+		goto exit;
+	}
+	memset(&rtt_param, 0, sizeof(rtt_param));
+	nla_for_each_attr(iter, data, len, rem) {
+		type = nla_type(iter);
+		switch (type) {
+		case RTT_ATTRIBUTE_TARGET_CNT:
+			target_cnt = nla_get_u8(iter);
+			if (rtt_param.rtt_target_cnt > RTT_MAX_TARGET_CNT) {
+				WL_ERR(("exceed max target count : %d\n",
+					target_cnt));
+				err = BCME_RANGE;
+				goto exit;
+			}
+			rtt_param.rtt_target_cnt = target_cnt;
+			rtt_param.target_info = kzalloc(TARGET_INFO_SIZE(target_cnt), GFP_KERNEL);
+			if (rtt_param.target_info == NULL) {
+				WL_ERR(("failed to allocate target info for (%d)\n", target_cnt));
+				err = BCME_NOMEM;
+				goto exit;
+			}
+			break;
+		case RTT_ATTRIBUTE_TARGET_INFO:
+			rtt_target = rtt_param.target_info;
+			nla_for_each_nested(iter1, iter, rem1) {
+				nla_for_each_nested(iter2, iter1, rem2) {
+					type = nla_type(iter2);
+					switch (type) {
+					case RTT_ATTRIBUTE_TARGET_MAC:
+						memcpy(&rtt_target->addr, nla_data(iter2),
+							ETHER_ADDR_LEN);
+						break;
+					case RTT_ATTRIBUTE_TARGET_TYPE:
+						rtt_target->type = nla_get_u8(iter2);
+						if (rtt_target->type == RTT_INVALID ||
+							(rtt_target->type == RTT_ONE_WAY &&
+							!capability.rtt_one_sided_supported)) {
+							WL_ERR(("doesn't support RTT type"
+								" : %d\n",
+								rtt_target->type));
+							err = -EINVAL;
+							goto exit;
+						}
+						break;
+					case RTT_ATTRIBUTE_TARGET_PEER:
+						rtt_target->peer = nla_get_u8(iter2);
+						break;
+					case RTT_ATTRIBUTE_TARGET_CHAN:
+						memcpy(&rtt_target->channel, nla_data(iter2),
+							sizeof(rtt_target->channel));
+						break;
+					case RTT_ATTRIBUTE_TARGET_PERIOD:
+						rtt_target->burst_period = nla_get_u32(iter2);
+						if (rtt_target->burst_period < 32) {
+							/* 100ms unit */
+							rtt_target->burst_period *= 100;
+						} else {
+							WL_ERR(("%d value must in (0-31)\n",
+								rtt_target->burst_period));
+							err = EINVAL;
+							goto exit;
+						}
+						break;
+					case RTT_ATTRIBUTE_TARGET_NUM_BURST:
+						rtt_target->num_burst = nla_get_u32(iter2);
+						if (rtt_target->num_burst > 16) {
+							WL_ERR(("%d value must in (0-15)\n",
+								rtt_target->num_burst));
+							err = -EINVAL;
+							goto exit;
+						}
+						rtt_target->num_burst = BIT(rtt_target->num_burst);
+						break;
+					case RTT_ATTRIBUTE_TARGET_NUM_FTM_BURST:
+						rtt_target->num_frames_per_burst =
+						nla_get_u32(iter2);
+						break;
+					case RTT_ATTRIBUTE_TARGET_NUM_RETRY_FTM:
+						rtt_target->num_retries_per_ftm =
+						nla_get_u32(iter2);
+						break;
+					case RTT_ATTRIBUTE_TARGET_NUM_RETRY_FTMR:
+						rtt_target->num_retries_per_ftmr =
+						nla_get_u32(iter2);
+						if (rtt_target->num_retries_per_ftmr > 3) {
+							WL_ERR(("%d value must in (0-3)\n",
+								rtt_target->num_retries_per_ftmr));
+							err = -EINVAL;
+							goto exit;
+						}
+						break;
+					case RTT_ATTRIBUTE_TARGET_LCI:
+						rtt_target->LCI_request = nla_get_u8(iter2);
+						break;
+					case RTT_ATTRIBUTE_TARGET_LCR:
+						rtt_target->LCI_request = nla_get_u8(iter2);
+						break;
+					case RTT_ATTRIBUTE_TARGET_BURST_DURATION:
+						if ((nla_get_u32(iter2) > 1 &&
+							nla_get_u32(iter2) < 12)) {
+							rtt_target->burst_duration =
+							dhd_rtt_idx_to_burst_duration(
+								nla_get_u32(iter2));
+						} else if (nla_get_u32(iter2) == 15) {
+							/* use default value */
+							rtt_target->burst_duration = 0;
+						} else {
+							WL_ERR(("%d value must in (2-11) or 15\n",
+								nla_get_u32(iter2)));
+							err = -EINVAL;
+							goto exit;
+						}
+						break;
+					case RTT_ATTRIBUTE_TARGET_BW:
+						rtt_target->bw = nla_get_u8(iter2);
+						break;
+					case RTT_ATTRIBUTE_TARGET_PREAMBLE:
+						rtt_target->preamble = nla_get_u8(iter2);
+						break;
+					}
+				}
+				/* convert to chanspec value */
+				rtt_target->chanspec =
+					dhd_rtt_convert_to_chspec(rtt_target->channel);
+				if (rtt_target->chanspec == 0) {
+					WL_ERR(("Channel is not valid \n"));
+					err = -EINVAL;
+					goto exit;
+				}
+				WL_INFORM(("Target addr %s, Channel : %s for RTT \n",
+					bcm_ether_ntoa((const struct ether_addr *)&rtt_target->addr,
+					eabuf),
+					wf_chspec_ntoa(rtt_target->chanspec, chanbuf)));
+				rtt_target++;
+		}
+			break;
+		}
+	}
+	WL_DBG(("leave :target_cnt : %d\n", rtt_param.rtt_target_cnt));
+	if (dhd_dev_rtt_set_cfg(bcmcfg_to_prmry_ndev(cfg), &rtt_param) < 0) {
+		WL_ERR(("Could not set RTT configuration\n"));
+		err = -EINVAL;
+	}
+exit:
+	/* free the target info list */
+	kfree(rtt_param.target_info);
+	return err;
+}
+
+static int
+wl_cfgvendor_rtt_cancel_config(struct wiphy *wiphy, struct wireless_dev *wdev,
+	const void *data, int len)
+{
+	int err = 0, rem, type, target_cnt = 1;
+	int target_cnt_chk = 0;
+	const struct nlattr *iter;
+	struct ether_addr *mac_list = NULL, *mac_addr = NULL;
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+
+	nla_for_each_attr(iter, data, len, rem) {
+		type = nla_type(iter);
+
+		switch (type) {
+		case RTT_ATTRIBUTE_TARGET_CNT:
+			if (mac_list != NULL) {
+				WL_ERR(("mac_list is not NULL\n"));
+				goto exit;
+			}
+			target_cnt = nla_get_u8(iter);
+			if (target_cnt > 0) {
+				mac_list = (struct ether_addr *)kzalloc(target_cnt * ETHER_ADDR_LEN,
+					GFP_KERNEL);
+				if (mac_list == NULL) {
+					WL_ERR(("failed to allocate mem for mac list\n"));
+					goto exit;
+				}
+				mac_addr = &mac_list[0];
+			} else {
+				/* cancel the current whole RTT process */
+				goto cancel;
+			}
+			break;
+		case RTT_ATTRIBUTE_TARGET_MAC:
+			if (mac_addr) {
+				memcpy(mac_addr++, nla_data(iter), ETHER_ADDR_LEN);
+				target_cnt_chk++;
+				if (target_cnt_chk > target_cnt) {
+					WL_ERR(("over target count\n"));
+					goto exit;
+				}
+				break;
+			} else {
+				WL_ERR(("mac_list is NULL\n"));
+				goto exit;
+			}
+
+		}
+	}
+cancel:
+	if (dhd_dev_rtt_cancel_cfg(bcmcfg_to_prmry_ndev(cfg), mac_list, target_cnt) < 0) {
+		WL_ERR(("Could not cancel RTT configuration\n"));
+		err = -EINVAL;
+	}
+exit:
+	if (mac_list) {
+		kfree(mac_list);
+	}
+	return err;
+}
+
+static int
+wl_cfgvendor_rtt_get_capability(struct wiphy *wiphy, struct wireless_dev *wdev,
+	const void *data, int len)
+{
+	int err = 0;
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+
+	rtt_capabilities_t capability;
+
+	err = dhd_dev_rtt_capability(bcmcfg_to_prmry_ndev(cfg), &capability);
+	if (unlikely(err)) {
+		WL_ERR(("Vendor Command reply failed ret:%d \n", err));
+		goto exit;
+	}
+	err =  wl_cfgvendor_send_cmd_reply(wiphy, bcmcfg_to_prmry_ndev(cfg),
+	        &capability, sizeof(capability));
+	if (unlikely(err)) {
+		WL_ERR(("Vendor Command reply failed ret:%d \n", err));
+	}
+exit:
+	return err;
+}
+
+#endif /* RTT_SUPPORT */
+
+#ifdef GSCAN_SUPPORT
 static int wl_cfgvendor_enable_lazy_roam(struct wiphy *wiphy,
 	struct wireless_dev *wdev, const void  *data, int len)
 {
