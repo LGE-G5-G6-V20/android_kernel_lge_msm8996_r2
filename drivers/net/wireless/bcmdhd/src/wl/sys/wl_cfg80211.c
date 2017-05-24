@@ -11645,22 +11645,16 @@ wl_notify_rx_mgmt_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 	wl_event_rx_frame_data_t *rxframe;
 	u32 event;
 	u8 *mgmt_frame;
-	u8 bsscfgidx;
-	u32 mgmt_frame_len;
-	u16 channel;
-	if (ntoh32(e->datalen) < sizeof(wl_event_rx_frame_data_t)) {
-		WL_ERR(("wrong datalen:%d\n", ntoh32(e->datalen)));
+	u8 bsscfgidx = e->bsscfgidx;
+	u32 mgmt_frame_len = ntoh32(e->datalen);
+	u16 channel = ((ntoh16(rxframe->channel) & WL_CHANSPEC_CHAN_MASK));
+
+	if (mgmt_frame_len < sizeof(wl_event_rx_frame_data_t)) {
+		WL_ERR(("wrong datalen:%d\n", mgmt_frame_len));
 		return -EINVAL;
 	}
-	mgmt_frame_len = ntoh32(e->datalen) - sizeof(wl_event_rx_frame_data_t);
-	event = ntoh32(e->event_type);
-	bsscfgidx = e->bsscfgidx;
-	rxframe = (wl_event_rx_frame_data_t *)data;
-	if (!rxframe) {
-		WL_ERR(("rxframe: NULL\n"));
-		return -EINVAL;
-	}
-	channel = (ntoh16(rxframe->channel) & WL_CHANSPEC_CHAN_MASK);
+	mgmt_frame_len -= sizeof(wl_event_rx_frame_data_t);
+
 	memset(&bssid, 0, ETHER_ADDR_LEN);
 
 	ndev = cfgdev_to_wlc_ndev(cfgdev, cfg);
@@ -11845,7 +11839,8 @@ wl_notify_rx_mgmt_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 		mgmt_frame = (u8 *)(data);
 		mgmt_frame_len = ntoh32(e->datalen);
 		if (mgmt_frame_len < DOT11_MGMT_HDR_LEN) {
-			WL_ERR(("wrong datalen:%d\n", mgmt_frame_len));
+			WL_ERR(("WLC_E_PROBREQ_MSG - wrong datalen:%d\n",
+				mgmt_frame_len));
 			return -EINVAL;
 		}
 		prbreq_ie_len = mgmt_frame_len - DOT11_MGMT_HDR_LEN;
