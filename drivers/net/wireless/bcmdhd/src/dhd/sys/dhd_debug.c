@@ -501,7 +501,13 @@ dhd_dbg_custom_evnt_handler(dhd_pub_t *dhdp, event_log_hdr_t *hdr, uint32 *data)
 	wl_log_id.t = *data;
 	if (wl_log_id.version != DIAG_VERSION) return BCME_VERSION;
 
-	ts_hdr = (void *)data - sizeof(event_log_hdr_t);
+	/* custom event log should at least contain a wl_event_log_id_ver_t
+	 * header and an arm cycle count
+	 */
+	if (hdr->count < 2)
+		return BCME_BADLEN;
+
+	ts_hdr = (event_log_hdr_t *)((uint8 *)data - sizeof(event_log_hdr_t));
 	if (ts_hdr->tag == EVENT_LOG_TAG_TS) {
 		ts_data = (uint32 *)ts_hdr - ts_hdr->count;
 		ts_saved = (uint64)ts_data[0];
@@ -754,9 +760,8 @@ dhd_dbg_msgtrace_log_parser(dhd_pub_t *dhdp, void *event_data,
 	 * event log block header
 	 * event log payload
 	 */
-	if (datalen <= MSGTRACE_HDRLEN + EVENT_LOG_BLOCK_HDRLEN) {
+	if (datalen <= MSGTRACE_HDRLEN + EVENT_LOG_BLOCK_HDRLEN)
 		return;
-	}
 	hdr = (msgtrace_hdr_t *)event_data;
 	data = (char *)event_data + MSGTRACE_HDRLEN;
 	datalen -= MSGTRACE_HDRLEN;
@@ -780,15 +785,14 @@ dhd_dbg_msgtrace_log_parser(dhd_pub_t *dhdp, void *event_data,
 		 * one argument (4 bytes) for arm cycle count and up to 16
 		 * arguments
 		 */
-		if ((log_hdr->count == 0) || (log_hdr->count > MAX_NO_OF_ARG)) {
+		if ((log_hdr->count == 0) || (log_hdr->count > MAX_NO_OF_ARG))
 			break;
-		}
 
 		log_pyld_len = log_hdr->count * DATA_UNIT_FOR_LOG_CNT;
-		/* log data should not cross the event data boundary */
-		if (((char *)log_hdr - data) < log_pyld_len) {
+		/* log data should not cross event data boundary */
+		if (((char *)log_hdr - data) < log_pyld_len)
 			break;
-		}
+
 		/* skip 4 bytes time stamp packet */
 		if (log_hdr->tag == EVENT_LOG_TAG_TS) {
 			datalen -= log_pyld_len + log_hdr_len;
