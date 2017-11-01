@@ -81,6 +81,9 @@ bool dhd_mp_halting(dhd_pub_t *dhdp);
 extern void bcmsdh_waitfor_iodrain(void *sdh);
 extern void bcmsdh_reject_ioreqs(void *sdh, bool reject);
 extern bool  bcmsdh_fatal_error(void *sdh);
+static int dhdsdio_suspend(void *context);
+static int dhdsdio_resume(void *context);
+
 
 #ifndef DHDSDIO_MEM_DUMP_FNAME
 #define DHDSDIO_MEM_DUMP_FNAME         "mem_dump"
@@ -658,6 +661,16 @@ static uint8 dhdsdio_sleepcsr_get(dhd_bus_t *bus);
 extern uint32 dhd_get_htsf(void *dhd, int ifidx);
 #endif /* WLMEDIA_HTSF */
 
+static bool dhdsdio_dpc(dhd_bus_t *bus);
+static int dhdsdio_set_sdmode(dhd_bus_t *bus, int32 sd_mode);
+static int dhdsdio_sdclk(dhd_bus_t *bus, bool on);
+
+int dhd_bcmsdh_send_buffer(void *bus, uint8 *frame, uint16 len);
+#ifdef DHD_ULP
+#include <dhd_ulp.h>
+static int dhd_bus_ulp_reinit_fw(dhd_bus_t *bus);
+#endif /* DHD_ULP */
+
 static void
 dhdsdio_tune_fifoparam(struct dhd_bus *bus)
 {
@@ -1092,12 +1105,27 @@ dhdsdio_clk_devsleep_iovar(dhd_bus_t *bus, bool on)
 		DHD_TRACE(("%s: clk before sleep: 0x%x\n", __FUNCTION__,
 			bcmsdh_cfg_read(bus->sdh, SDIO_FUNC_1,
 			SBSDIO_FUNC1_CHIPCLKCSR, &err)));
-
+#ifdef USE_CMD14
+		err = bcmsdh_sleep(bus->sdh, TRUE);
+#else
+		if ((SLPAUTO_ENAB(bus)) && (bus->idleclock == DHD_IDLE_STOP)) {
+			if (sd1idle) {
+				/* Change to SD1 mode */
+				dhdsdio_set_sdmode(bus, 1);
+			}
+		}
 
 		err = dhdsdio_clk_kso_enab(bus, FALSE);
 		if (OOB_WAKEUP_ENAB(bus))
 		{
 			err = bcmsdh_gpioout(bus->sdh, GPIO_DEV_WAKEUP, FALSE);  /* GPIO_1 is off */
+		}
+#endif /* USE_CMD14 */
+
+		if ((SLPAUTO_ENAB(bus)) && (bus->idleclock != DHD_IDLE_ACTIVE)) {
+			DHD_TRACE(("%s: Turnoff SD clk\n", __FUNCTION__));
+			/* Now remove the SD clock */
+			err = dhdsdio_sdclk(bus, FALSE);
 		}
 	} else {
 		/* Exit Sleep */
@@ -1116,6 +1144,34 @@ dhdsdio_clk_devsleep_iovar(dhd_bus_t *bus, bool on)
 				DHD_ERROR(("ERROR: GPIO_DEV_SRSTATE still low!\n"));
 			}
 		}
+#ifdef USE_CMD14
+		err = bcmsdh_sleep(bus->sdh, FALSE);
+		if (SLPAUTO_ENAB(bus) && (err != 0)) {
+			OSL_DELAY(10000);
+			DHD_TRACE(("%s: Resync device sleep\n", __FUNCTION__));
+
+			/* Toggle sleep to resync with host and device */
+			err = bcmsdh_sleep(bus->sdh, TRUE);
+			OSL_DELAY(10000);
+			err = bcmsdh_sleep(bus->sdh, FALSE);
+
+			if (err) {
+				OSL_DELAY(10000);
+				DHD_ERROR(("%s: CMD14 exit failed again!\n", __FUNCTION__));
+
+				/* Toggle sleep to resync with host and device */
+				err = bcmsdh_sleep(bus->sdh, TRUE);
+				OSL_DELAY(10000);
+				err = bcmsdh_sleep(bus->sdh, FALSE);
+				if (err) {
+					DHD_ERROR(("%s: CMD14 exit failed twice!\n", __FUNCTION__));
+					DHD_ERROR(("%s: FATAL: Device non-response!\n",
+						__FUNCTION__));
+					err = 0;
+				}
+			}
+		}
+#else
 		if (OOB_WAKEUP_ENAB(bus))
 		{
 			err = bcmsdh_gpioout(bus->sdh, GPIO_DEV_WAKEUP, TRUE);  /* GPIO_1 is on */
@@ -1131,6 +1187,10 @@ dhdsdio_clk_devsleep_iovar(dhd_bus_t *bus, bool on)
 			err = 0; /* continue anyway */
 		}
 
+		if ((SLPAUTO_ENAB(bus)) && (bus->idleclock == DHD_IDLE_STOP)) {
+			dhdsdio_set_sdmode(bus, bus->sd_mode);
+		}
+#endif /* !USE_CMD14 */
 
 		if (err == 0) {
 			uint8 csr;
@@ -1174,6 +1234,151 @@ dhdsdio_clk_devsleep_iovar(dhd_bus_t *bus, bool on)
 	}
 
 	return err;
+}
+
+/* Turn backplane clock on or off */
+static int
+dhdsdio_htclk(dhd_bus_t *bus, bool on, bool pendok)
+{
+#define HT_AVAIL_ERROR_MAX 10
+	static int ht_avail_error = 0;
+	int err;
+	uint8 clkctl, clkreq, devctl;
+	bcmsdh_info_t *sdh;
+
+	DHD_TRACE(("%s: Enter\n", __FUNCTION__));
+
+	clkctl = 0;
+	sdh = bus->sdh;
+
+
+	if (!KSO_ENAB(bus))
+		return BCME_OK;
+
+	if (SLPAUTO_ENAB(bus)) {
+		bus->clkstate = (on ? CLK_AVAIL : CLK_SDONLY);
+		return BCME_OK;
+	}
+
+	if (on) {
+		/* Request HT Avail */
+		clkreq = bus->alp_only ? SBSDIO_ALP_AVAIL_REQ : SBSDIO_HT_AVAIL_REQ;
+
+
+
+		bcmsdh_cfg_write(sdh, SDIO_FUNC_1, SBSDIO_FUNC1_CHIPCLKCSR, clkreq, &err);
+		if (err) {
+			ht_avail_error++;
+			if (ht_avail_error < HT_AVAIL_ERROR_MAX) {
+				DHD_ERROR(("%s: HT Avail request error: %d\n", __FUNCTION__, err));
+			}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)
+			else if (ht_avail_error == HT_AVAIL_ERROR_MAX) {
+				dhd_os_send_hang_message(bus->dhd);
+			}
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27) */
+			return BCME_ERROR;
+		} else {
+			ht_avail_error = 0;
+		}
+
+
+		/* Check current status */
+		clkctl = bcmsdh_cfg_read(sdh, SDIO_FUNC_1, SBSDIO_FUNC1_CHIPCLKCSR, &err);
+		if (err) {
+			DHD_ERROR(("%s: HT Avail read error: %d\n", __FUNCTION__, err));
+			return BCME_ERROR;
+		}
+
+#if !defined(OOB_INTR_ONLY)
+		/* Go to pending and await interrupt if appropriate */
+		if (!SBSDIO_CLKAV(clkctl, bus->alp_only) && pendok) {
+			/* Allow only clock-available interrupt */
+			devctl = bcmsdh_cfg_read(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL, &err);
+			if (err) {
+				DHD_ERROR(("%s: Devctl access error setting CA: %d\n",
+				           __FUNCTION__, err));
+				return BCME_ERROR;
+			}
+
+			devctl |= SBSDIO_DEVCTL_CA_INT_ONLY;
+			bcmsdh_cfg_write(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL, devctl, &err);
+			DHD_INFO(("CLKCTL: set PENDING\n"));
+			bus->clkstate = CLK_PENDING;
+			return BCME_OK;
+		} else
+#endif /* !defined (OOB_INTR_ONLY) */
+		{
+			if (bus->clkstate == CLK_PENDING) {
+				/* Cancel CA-only interrupt filter */
+				devctl = bcmsdh_cfg_read(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL, &err);
+				devctl &= ~SBSDIO_DEVCTL_CA_INT_ONLY;
+				bcmsdh_cfg_write(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL, devctl, &err);
+			}
+		}
+
+		/* Otherwise, wait here (polling) for HT Avail */
+		if (!SBSDIO_CLKAV(clkctl, bus->alp_only)) {
+			SPINWAIT_SLEEP(sdioh_spinwait_sleep,
+				((clkctl = bcmsdh_cfg_read(sdh, SDIO_FUNC_1,
+			                                    SBSDIO_FUNC1_CHIPCLKCSR, &err)),
+			          !SBSDIO_CLKAV(clkctl, bus->alp_only)), PMU_MAX_TRANSITION_DLY);
+		}
+		if (err) {
+			DHD_ERROR(("%s: HT Avail request error: %d\n", __FUNCTION__, err));
+			return BCME_ERROR;
+		}
+		if (!SBSDIO_CLKAV(clkctl, bus->alp_only)) {
+			DHD_ERROR(("%s: HT Avail timeout (%d): clkctl 0x%02x\n",
+			           __FUNCTION__, PMU_MAX_TRANSITION_DLY, clkctl));
+			return BCME_ERROR;
+		}
+
+		/* Mark clock available */
+		bus->clkstate = CLK_AVAIL;
+		DHD_INFO(("CLKCTL: turned ON\n"));
+
+#if defined(DHD_DEBUG)
+		if (bus->alp_only == TRUE) {
+#if !defined(BCMLXSDMMC)
+			if (!SBSDIO_ALPONLY(clkctl)) {
+				DHD_ERROR(("%s: HT Clock, when ALP Only\n", __FUNCTION__));
+			}
+#endif /* !defined(BCMLXSDMMC) */
+		} else {
+			if (SBSDIO_ALPONLY(clkctl)) {
+				DHD_ERROR(("%s: HT Clock should be on.\n", __FUNCTION__));
+			}
+		}
+#endif /* defined (DHD_DEBUG) */
+
+		bus->activity = TRUE;
+#ifdef DHD_USE_IDLECOUNT
+		bus->idlecount = 0;
+#endif /* DHD_USE_IDLECOUNT */
+	} else {
+		clkreq = 0;
+
+		if (bus->clkstate == CLK_PENDING) {
+			/* Cancel CA-only interrupt filter */
+			devctl = bcmsdh_cfg_read(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL, &err);
+			devctl &= ~SBSDIO_DEVCTL_CA_INT_ONLY;
+			bcmsdh_cfg_write(sdh, SDIO_FUNC_1, SBSDIO_DEVICE_CTL, devctl, &err);
+		}
+
+		bus->clkstate = CLK_SDONLY;
+		if (!SR_ENAB(bus)) {
+			bcmsdh_cfg_write(sdh, SDIO_FUNC_1, SBSDIO_FUNC1_CHIPCLKCSR, clkreq, &err);
+			DHD_INFO(("CLKCTL: turned OFF\n"));
+			if (err) {
+				DHD_ERROR(("%s: Failed access turning clock off: %d\n",
+				           __FUNCTION__, err));
+				return BCME_ERROR;
+			}
+		}
+	}
+	return BCME_OK;
 }
 
 /* Turn backplane clock on or off */
@@ -1328,6 +1533,22 @@ dhdsdio_htclk(dhd_bus_t *bus, bool on, bool pendok)
 	return BCME_OK;
 }
 
+/* Change SD1/SD4 bus mode */
+static int
+dhdsdio_set_sdmode(dhd_bus_t *bus, int32 sd_mode)
+{
+	int err;
+
+	err = bcmsdh_iovar_op(bus->sdh, "sd_mode", NULL, 0,
+		&sd_mode, sizeof(sd_mode), TRUE);
+	if (err) {
+		DHD_ERROR(("%s: error changing sd_mode: %d\n",
+			__FUNCTION__, err));
+		return BCME_ERROR;
+	}
+	return BCME_OK;
+}
+
 /* Change idle/active SD state */
 static int
 dhdsdio_sdclk(dhd_bus_t *bus, bool on)
@@ -1350,14 +1571,6 @@ dhdsdio_sdclk(dhd_bus_t *bus, bool on)
 				return BCME_ERROR;
 			}
 
-			iovalue = bus->sd_mode;
-			err = bcmsdh_iovar_op(bus->sdh, "sd_mode", NULL, 0,
-			                      &iovalue, sizeof(iovalue), TRUE);
-			if (err) {
-				DHD_ERROR(("%s: error changing sd_mode: %d\n",
-				           __FUNCTION__, err));
-				return BCME_ERROR;
-			}
 		} else if (bus->idleclock != DHD_IDLE_ACTIVE) {
 			/* Restore clock speed */
 			iovalue = bus->sd_divisor;
@@ -1378,18 +1591,6 @@ dhdsdio_sdclk(dhd_bus_t *bus, bool on)
 			return BCME_ERROR;
 		}
 		if (bus->idleclock == DHD_IDLE_STOP) {
-			if (sd1idle) {
-				/* Change to SD1 mode and turn off clock */
-				iovalue = 1;
-				err = bcmsdh_iovar_op(bus->sdh, "sd_mode", NULL, 0,
-				                      &iovalue, sizeof(iovalue), TRUE);
-				if (err) {
-					DHD_ERROR(("%s: error changing sd_clock: %d\n",
-					           __FUNCTION__, err));
-					return BCME_ERROR;
-				}
-			}
-
 			iovalue = 0;
 			err = bcmsdh_iovar_op(bus->sdh, "sd_clock", NULL, 0,
 			                      &iovalue, sizeof(iovalue), TRUE);
@@ -2608,7 +2809,8 @@ enum {
 	IOV_TXGLOMSIZE,
 	IOV_TXGLOMMODE,
 	IOV_HANGREPORT,
-	IOV_TXINRX_THRES
+	IOV_TXINRX_THRES,
+	IOV_SDIO_SUSPEND
 };
 
 const bcm_iovar_t dhdsdio_iovars[] = {
@@ -2662,6 +2864,7 @@ const bcm_iovar_t dhdsdio_iovars[] = {
 	{"txglomsize", IOV_TXGLOMSIZE, 0, IOVT_UINT32, 0 },
 	{"fw_hang_report", IOV_HANGREPORT, 0, IOVT_BOOL, 0 },
 	{"txinrx_thres", IOV_TXINRX_THRES, 0, IOVT_INT32, 0 },
+	{"sdio_suspend", IOV_SDIO_SUSPEND, 0, IOVT_UINT32, 0 },
 	{NULL, 0, 0, 0, 0 }
 };
 
@@ -3979,6 +4182,20 @@ dhdsdio_doiovar(dhd_bus_t *bus, const bcm_iovar_t *vi, uint32 actionid, const ch
 			bcmerror = BCME_BADARG;
 		} else {
 			bus->txinrx_thres = int_val;
+		}
+		break;
+
+	case IOV_GVAL(IOV_SDIO_SUSPEND):
+		int_val = (bus->dhd->busstate == DHD_BUS_SUSPEND) ? 1 : 0;
+		bcopy(&int_val, arg, val_size);
+		break;
+
+	case IOV_SVAL(IOV_SDIO_SUSPEND):
+		if (bool_val) { /* Suspend */
+			dhdsdio_suspend(bus);
+		}
+		else { /* Resume */
+			dhdsdio_resume(bus);
 		}
 		break;
 
