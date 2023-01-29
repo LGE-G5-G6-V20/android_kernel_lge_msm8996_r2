@@ -48,7 +48,11 @@
 		<  401800000  5  5 >,
 		<  510000000  6  5 >,
 		<  560000000  7  7 >,
+#ifdef CONFIG_MSM8996_GPU_OVERCLOCK
+		<  712000000  8  7 >;
+#else
 		<  624000000  8  7 >;
+#endif
 	qcom,gfxfreq-mx-speedbin0 =
 		<	   0  0 >,
 		<  133000000  4 >,
@@ -57,7 +61,11 @@
 		<  401800000  5 >,
 		<  510000000  5 >,
 		<  560000000  7 >,
+#ifdef CONFIG_MSM8996_GPU_OVERCLOCK
+		<  712000000  7 >;
+#else
 		<  624000000  7 >;
+#endif
 
 	qcom,gfxfreq-speedbin1 =
 		<	   0  0  0 >,
@@ -153,8 +161,16 @@
 
 			qcom,speed-bin = <0>;
 
-			qcom,initial-pwrlevel = <5>;
-
+			qcom,initial-pwrlevel = <6>;
+#ifdef CONFIG_MSM8996_GPU_OVERCLOCK
+			qcom,gpu-pwrlevel@0 {
+				reg = <0>;
+				qcom,gpu-freq = <712000000>;
+				qcom,bus-freq = <12>;
+				qcom,bus-min = <12>;
+				qcom,bus-max = <12>;
+			};
+#else
 			qcom,gpu-pwrlevel@0 {
 				reg = <0>;
 				qcom,gpu-freq = <624000000>;
@@ -162,6 +178,7 @@
 				qcom,bus-min = <11>;
 				qcom,bus-max = <12>;
 			};
+#endif
 
 			qcom,gpu-pwrlevel@1 {
 				reg = <1>;
@@ -572,8 +589,13 @@
 			< 1228800000 12 >,
 			< 1324800000 13 >,
 			< 1401600000 14 >,
+#ifdef CONFIG_MSM8996_CPU_OVERCLOCK
+			< 1593600000 15 >,
+			< 1728000000 16 >;
+#else
 			< 1478400000 15 >,
 			< 1593600000 16 >;
+#endif
 		qcom,pwrcl-speedbin1-v0 =
 			<          0  0 >,
 			<  307200000  1 >,
@@ -649,8 +671,13 @@
 			< 1824000000 21 >,
 			< 1920000000 22 >,
 			< 1996800000 23 >,
+#ifdef CONFIG_MSM8996_CPU_OVERCLOCK
+			< 2150400000 24 >,
+			< 2265600000 25 >;
+#else
 			< 2073600000 24 >,
 			< 2150400000 25 >;
+#endif
 		qcom,perfcl-speedbin1-v0 =
 			<          0  0 >,
 			<  307200000  1 >,
@@ -815,8 +842,13 @@
 		< 1228800 >,
 		< 1324800 >,
 		< 1401600 >,
+#ifdef CONFIG_MSM8996_CPU_OVERCLOCK
+		< 1593600 >,
+		< 1728000 >;
+#else
 		< 1478400 >,
 		< 1593600 >;
+#endif
 	qcom,cpufreq-table-2 =
 		<  307200 >,
 		<  403200 >,
@@ -841,8 +873,13 @@
 		< 1824000 >,
 		< 1920000 >,
 		< 1996800 >,
+#ifdef CONFIG_MSM8996_CPU_OVERCLOCK
+		< 2150400 >,
+		< 2265600 >;
+#else
 		< 2073600 >,
 		< 2150400 >;
+#endif
 };
 
 &m4m_cache {
@@ -885,8 +922,13 @@
 			< 1228800   902400 >,
 			< 1324800  1056000 >,
 			< 1401600  1132800 >,
+#ifdef CONFIG_MSM8996_CPU_OVERCLOCK
+			< 1593600  1382400 >,
+			< 1728000  1382400 >;
+#else
 			< 1478400  1190400 >,
 			< 1593600  1382400 >;
+#endif
 		cpu-to-dev-map-2 =
 			<  480000  307200 >,
 			<  556800  307200 >,
@@ -909,8 +951,13 @@
 			< 1824000 1382400 >,
 			< 1920000 1459200 >,
 			< 1996800 1593600 >,
+#ifdef CONFIG_MSM8996_CPU_OVERCLOCK
+			< 2150400 1593600 >,
+			< 2265600 1593600 >;
+#else
 			< 2073600 1593600 >,
 			< 2150400 1593600 >;
+#endif
 	};
 
 	mincpubw-cpufreq {

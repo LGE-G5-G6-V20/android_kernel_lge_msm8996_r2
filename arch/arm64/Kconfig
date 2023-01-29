@@ -1419,6 +1419,30 @@ config SWAN2K_UNDERVOLTS_SAFE
 		to guarantee the kernel will work well on any of the 
 		LGE_8996 phones.
 
+config SWAN2K_GAMING_MODE
+	bool "Enable Swan2000's Gaming Mode"
+	select MSM8996_GPU_OVERCLOCK
+	select MSM8996_CPU_OVERCLOCK
+	default n
+	help
+		Select this option to enable Swan2000's gaming mode
+		comprised of CPU and GPU overclocks. Can be chained 
+		with the undervolt configs for better efficiency.
+
+config MSM8996_GPU_OVERCLOCK
+	bool "Overclock msm8996's gpu"
+	default n
+	help
+		Select this option to overclock msm8996's Adreno 530.
+
+config MSM8996_CPU_OVERCLOCK
+	bool "Overclock msm8996's cpu"
+	default n
+	help
+		Select this option to overclock msm8996's kryo CPU 
+		cores.
+	
+
 endmenu
 
 menu "CPU Power Management"
