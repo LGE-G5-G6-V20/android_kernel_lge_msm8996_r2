@@ -108,6 +108,7 @@ config ARM64
 	select HAVE_ARM_SMCCC
 	select THREAD_INFO_IN_TASK
 	select HAVE_ARM_SMCCC
+	select HAVE_LD_DEAD_CODE_DATA_ELIMINATION
 	help
 	  ARM 64-bit (AArch64) Linux support.
 
