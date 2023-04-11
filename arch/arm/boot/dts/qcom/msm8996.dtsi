@@ -592,7 +592,13 @@
 			<  7759 /* 1017 MHz */ >,
 			<  9887 /* 1296 MHz */ >,
 			< 11863 /* 1555 MHz */ >,
+#ifdef CONFIG_MSM8996_DDR_OVERCLOCK
+			< 13763 /* 1804 MHz */ >,
+			< 15240 /* 2000 MHz */ >,
+			< 16253 /* 2133 MHz */ >;
+#else
 			< 13763 /* 1804 MHz */ >;
+#endif
 	};
 
 	qcom,cpu-bwmon {
@@ -621,7 +627,13 @@
 			<  7759 /* 1017 MHz */ >,
 			<  9887 /* 1296 MHz */ >,
 			< 11863 /* 1555 MHz */ >,
+#ifdef CONFIG_MSM8996_DDR_OVERCLOCK
+			< 13763 /* 1804 MHz */ >,
+			< 15240 /* 2000 MHz */ >,
+			< 16253 /* 2133 MHz */ >;
+#else
 			< 13763 /* 1804 MHz */ >;
+#endif
 	};
 
 	memlat_cpu0: qcom,memlat-cpu0 {

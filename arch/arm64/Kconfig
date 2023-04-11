@@ -1423,10 +1423,11 @@ config SWAN2K_GAMING_MODE
 	bool "Enable Swan2000's Gaming Mode"
 	select MSM8996_GPU_OVERCLOCK
 	select MSM8996_CPU_OVERCLOCK
+	select MSM8996_DDR_OVERCLOCK
 	default n
 	help
 		Select this option to enable Swan2000's gaming mode
-		comprised of CPU and GPU overclocks. Can be chained 
+		comprised of CPU, DDR and GPU overclocks. Can be chained 
 		with the undervolt configs for better efficiency.
 
 config MSM8996_GPU_OVERCLOCK
@@ -1441,6 +1442,13 @@ config MSM8996_CPU_OVERCLOCK
 	help
 		Select this option to overclock msm8996's kryo CPU 
 		cores.
+
+config MSM8996_DDR_OVERCLOCK
+	bool "Overclock msm8996's DDR bus"
+	default n
+	help
+		Select this option to overclock msm8996's LPDDR4
+		memory from 1804MHz to 2133MHz.
 	
 
 endmenu
