@@ -359,6 +359,7 @@ CONFIG_REGULATOR_STUB=y
 
 # Enable configs for zram support and faster de/compression
 CONFIG_ZRAM=y
+CONFIG_ZRAM_DEDUP=y
 CONFIG_ZSMALLOC=y
 CONFIG_CRYPTO_LZ4=y
 
