@@ -1299,8 +1299,11 @@
 		< 1440000 >,
 		< 1516800 >,
 		< 1593600 >,
-		< 1785600 >,
+#ifdef CONFIG_ELSA_MSM8996PRO_CLOCK_RESTRICTION
+		< 1785600 >;
+#else
 		< 2188800 >;
+#endif
 	qcom,cpufreq-table-2 =
 		<  307200 >,
 		<  384000 >,
@@ -1375,7 +1378,11 @@
 			< 1440000 1132800 >,
 			< 1516800 1190400 >,
 			< 1593600 1286400 >,
+#ifdef CONFIG_ELSA_MSM8996PRO_CLOCK_RESTRICTION
+			< 1785600 1593600 >;
+#else
 			< 2188800 1593600 >;
+#endif
 		cpu-to-dev-map-2 =
 			<  307200  192000 >,
 			<  384000  192000 >,

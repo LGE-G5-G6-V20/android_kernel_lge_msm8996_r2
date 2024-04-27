@@ -1450,6 +1450,13 @@ config MSM8996_DDR_OVERCLOCK
 		Select this option to overclock msm8996's LPDDR4
 		memory from 1804MHz to 2133MHz.
 	
+config ELSA_MSM8996PRO_CLOCK_RESTRICTION
+	bool "Reduce LG V20 msm8996pro little cluster clocks"
+	default n
+	help
+		Select this option to reduce msm8996pro's little
+		cluster clocks from from 2188MHz to 1785MHz when building
+		for the LG V20, as they're all prototypes.
 
 endmenu
 
