@@ -1,0 +1,21 @@
+# Apply multiple Swan2000 Tweaks
+
+on property:sys.boot_completed=1
+
+    # Set I/O Scheduler's read ahead to 128KB
+    write /sys/block/sda/queue/read_ahead_kb 128
+
+    # Tweak Virtual Memory tunables
+    write /proc/sys/vm/vfs_cache_pressure 70
+	write /proc/sys/vm/swappiness 85
+	write /proc/sys/vm/dirty_ratio 15
+	write /proc/sys/vm/dirty_background_ratio 7
+    write /proc/sys/vm/oom_dump_tasks 0
+
+    # Various Tweaks to kernel modules and usb fast charge
+    write /sys/module/spurious/parameters/noirqdebug Y
+	write /sys/module/lowmemorykiller/parameters/enable_adaptive_lmk 1
+	write /sys/module/msm_thermal/parameters/enabled Y
+	write /sys/kernel/fast_charge/force_fast_charge 1
+
+    write /dev/kmsg "Swan2000 Boot Complete"
