@@ -177,37 +177,60 @@ else
 fi
 
 # link device name to lg config files
+COMMON_DEFCONFIG=vendor/lge/lge_msm8996_defconfig
+
 if [ "$DEVICE" = "H850" ]; then
-  DEVICE_DEFCONFIG=lineageos_h850_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/h850.config
+  BOARD_DEFCONFIG=vendor/lge/lge_alice_common.config
 elif [ "$DEVICE" = "H830" ]; then
-  DEVICE_DEFCONFIG=lineageos_h830_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/h830.config
+  BOARD_DEFCONFIG=vendor/lge/lge_alice_common.config
 elif [ "$DEVICE" = "RS988" ]; then
-  DEVICE_DEFCONFIG=lineageos_rs988_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/rs988.config
+  BOARD_DEFCONFIG=vendor/lge/lge_alice_common.config
 elif [ "$DEVICE" = "H870" ]; then
-  DEVICE_DEFCONFIG=lineageos_h870_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/h870.config
+  BOARD_DEFCONFIG=vendor/lge/lge_lucye_common.config
 elif [ "$DEVICE" = "H872" ]; then
-  DEVICE_DEFCONFIG=lineageos_h872_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/h872.config
+  BOARD_DEFCONFIG=vendor/lge/lge_lucye_common.config
 elif [ "$DEVICE" = "US997" ]; then
-  DEVICE_DEFCONFIG=lineageos_us997_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/us997.config
+  BOARD_DEFCONFIG=vendor/lge/lge_lucye_common.config
 elif [ "$DEVICE" = "H918" ]; then
-  DEVICE_DEFCONFIG=lineageos_h918_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/h918.config
+  BOARD_DEFCONFIG=vendor/lge/lge_elsa_common.config
 elif [ "$DEVICE" = "H910" ]; then
-  DEVICE_DEFCONFIG=lineageos_h910_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/h910.config
+  BOARD_DEFCONFIG=vendor/lge/lge_elsa_common.config
 elif [ "$DEVICE" = "H990" ]; then
-  DEVICE_DEFCONFIG=lineageos_h990_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/h990.config
+  BOARD_DEFCONFIG=vendor/lge/lge_elsa_common.config
 elif [ "$DEVICE" = "US996" ]; then
-  DEVICE_DEFCONFIG=lineageos_us996_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/us996.config
+  BOARD_DEFCONFIG=vendor/lge/lge_elsa_common.config
 elif [ "$DEVICE" = "US996D" ]; then
-  DEVICE_DEFCONFIG=lineageos_us996d_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/us996d.config
+  BOARD_DEFCONFIG=vendor/lge/lge_elsa_common.config
 elif [ "$DEVICE" = "VS995" ]; then
-  DEVICE_DEFCONFIG=lineageos_vs995_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/vs995.config
+  BOARD_DEFCONFIG=vendor/lge/lge_elsa_common.config
 elif [ "$DEVICE" = "LS997" ]; then
-  DEVICE_DEFCONFIG=lineageos_ls997_defconfig
+  DEVICE_DEFCONFIG=vendor/lge/ls997.config
+  BOARD_DEFCONFIG=vendor/lge/lge_elsa_common.config
 else
   ABORT "Invalid device '${DEVICE}' specified! Make sure to use upper-case."
 fi
 
+SWAN2000_DEFCONFIG=vendor/lge/swan2000.config
+
 # check for stuff
+[ -f "$RDIR/arch/$ARCH/configs/${COMMON_DEFCONFIG}" ] \
+	|| ABORT "$COMMON_DEFCONFIG not found in $ARCH configs!"
+
+[ -f "$RDIR/arch/$ARCH/configs/${BOARD_DEFCONFIG}" ] \
+	|| ABORT "$BOARD_DEFCONFIG not found in $ARCH configs!"
+
 [ -f "$RDIR/arch/$ARCH/configs/${DEVICE_DEFCONFIG}" ] \
 	|| ABORT "$DEVICE_DEFCONFIG not found in $ARCH configs!"
 
@@ -239,10 +262,10 @@ SETUP_BUILD() {
 	echo "$DEVICE" > $BDIR/DEVICE \
 		|| echo -e $COLOR_R"Failed to reflect device!"
     if [ $SINGLEBUILD = "yes" ]; then
-	    make -C "$RDIR" O=$BDIR "$DEVICE_DEFCONFIG" \
+	    make -C "$RDIR" O=$BDIR CROSS_COMPILE=$CROSS_COMPILE $COMMON_DEFCONFIG $BOARD_DEFCONFIG $DEVICE_DEFCONFIG $SWAN2000_DEFCONFIG \
 		    || ABORT "Failed to set up the kernel build."
     else # build_all will send make output to a file
-        make -C "$RDIR" O=$BDIR "$DEVICE_DEFCONFIG" &> zBuild_all.log \
+        make -C "$RDIR" O=$BDIR CROSS_COMPILE=$CROSS_COMPILE $COMMON_DEFCONFIG $BOARD_DEFCONFIG $DEVICE_DEFCONFIG $SWAN2000_DEFCONFIG &> zBuild_all.log \
 		    || ABORT "Failed to set up the kernel build."
     fi
 }
