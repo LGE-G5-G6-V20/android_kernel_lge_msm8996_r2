@@ -311,6 +311,8 @@ CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_v26=n
 # Disable verity to match Lineage's charter about verity on system images
 CONFIG_DM_VERITY=n
 
+# Enable DEAD_CODE_ELIMINATION to reduce kernel size
+CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y
 
 # Enable perf events
 CONFIG_PERF_EVENTS=y
