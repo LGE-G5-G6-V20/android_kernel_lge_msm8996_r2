@@ -4180,7 +4180,11 @@ static void smbchg_usb_pd_en(struct smbchg_chip *chip)
 	enum power_supply_type usb_supply_type;
 	char *usb_type_name = "null";
 	int c_mv, c_ma, target_icl_ma;
+#ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
 	int max_icl_ma = chip->somc_params.chg_det.typec_current_max;
+#else
+	int max_icl_ma = chip->cfg_fastchg_current_ma;
+#endif
 	int rc;
 
 	get_property_from_typec(chip, POWER_SUPPLY_PROP_VOLTAGE_MAX, &prop);
