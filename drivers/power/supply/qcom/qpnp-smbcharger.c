@@ -1023,7 +1023,6 @@ static int get_prop_batt_status(struct smbchg_chip *chip)
 	bool charger_present, chg_inhibit;
 #ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
 	int smart_votabled, other_votabled = 0;
-	bool smart_charging_faked = false;
 #endif
 
 	charger_present = is_usb_present(chip) | is_dc_present(chip) |
@@ -1097,16 +1096,9 @@ static int get_prop_batt_status(struct smbchg_chip *chip)
 	pr_smb(PR_MISC, "battchg suspend voter[%s] = %d\n",
 				BATTCHG_SMART_EN_VOTER, other_votabled);
 
-	if (smart_votabled && !other_votabled) {
-		smart_charging_faked = true;
-		pr_smb(PR_MISC, "Fake charging due to smart charge\n");
-	}
-
 	if (!(chg_type == BATT_NOT_CHG_VAL && !chip->hvdcp_3_det_ignore_uv) ||
-	    smart_charging_faked ||
 	    (!chip->batt_hot && !chip->batt_cold &&
-	     chip->therm_lvl_sel < (chip->thermal_levels - 1) &&
-	     somc_chg_therm_is_not_charge(chip, chip->therm_lvl_sel)))
+	     chip->therm_lvl_sel < (chip->thermal_levels - 1)))
 		status = POWER_SUPPLY_STATUS_CHARGING;
 	else
 		status = POWER_SUPPLY_STATUS_DISCHARGING;
@@ -1262,8 +1254,6 @@ static inline int get_prop_batt_capacity(struct smbchg_chip *chip)
 	}
 #ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
 exit:
-	somc_chg_lrc_check(chip);
-	capacity = somc_chg_lrc_get_capacity(&chip->somc_params, capacity);
 	somc_chg_shutdown_lowbatt(chip);
 #endif
 	return capacity;
@@ -3249,24 +3239,9 @@ static int smbchg_system_temp_level_set(struct smbchg_chip *chip,
 		return 0;
 
 	mutex_lock(&chip->therm_lvl_lock);
-#ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-	if (somc_chg_hvdcp3_is_preparing(chip)) {
-		pr_smb(PR_STATUS,
-			"Retry to set thermal level during hvdcp3 preparing\n");
-		somc_chg_therm_level_set(chip, lvl_sel);
-		goto out;
-	} else {
-		pr_smb(PR_STATUS, "set thermal lv to %d\n", lvl_sel);
-	}
-#endif
 	prev_therm_lvl = chip->therm_lvl_sel;
 	chip->therm_lvl_sel = lvl_sel;
-#ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-	if (chip->therm_lvl_sel == (chip->thermal_levels - 1) ||
-	    somc_chg_therm_is_not_charge(chip, chip->therm_lvl_sel)) {
-#else
 	if (chip->therm_lvl_sel == (chip->thermal_levels - 1)) {
-#endif
 		/*
 		 * Disable charging if highest value selected by
 		 * setting the DC and USB path in suspend
@@ -3287,7 +3262,6 @@ static int smbchg_system_temp_level_set(struct smbchg_chip *chip,
 	}
 
 #ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-	rc = somc_chg_therm_set_mitigation_params(chip);
 	if (chip->somc_params.hvdcp3.hvdcp3_detected) {
 		somc_chg_hvdcp3_therm_adjust_start(chip, HVDCP3_THERM_DELAY_MS);
 	}
@@ -3317,12 +3291,7 @@ static int smbchg_system_temp_level_set(struct smbchg_chip *chip,
 	}
 #endif
 
-#ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-	if (prev_therm_lvl == (chip->thermal_levels - 1) ||
-	    somc_chg_therm_is_not_charge(chip, prev_therm_lvl)) {
-#else
 	if (prev_therm_lvl == chip->thermal_levels - 1) {
-#endif
 		/*
 		 * If previously highest value was selected charging must have
 		 * been disabed. Enable charging by taking the DC and USB path
@@ -4126,10 +4095,6 @@ static int smbchg_config_chg_battery_type(struct smbchg_chip *chip)
 			}
 		}
 	}
-
-#ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-	ret = somc_chg_set_step_charge_params(chip, profile_node);
-#endif
 	return ret;
 }
 #endif
@@ -5233,7 +5198,6 @@ static void smbchg_hvdcp_det_work(struct work_struct *work)
 		}
 		mutex_unlock(&chip->usb_status_lock);
 	}
-	rc = somc_chg_therm_set_icl(chip);
 	if (rc < 0)
 		pr_err("Couldn't vote thermal ICL rc=%d\n", rc);
 #else
@@ -5443,7 +5407,6 @@ static void handle_usb_removal(struct smbchg_chip *chip)
 	if (!chip->hvdcp_not_supported)
 		restore_from_hvdcp_detection(chip);
 #ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-	somc_chg_lrc_check(chip);
 	somc_unplug_wakelock(&chip->somc_params);
 	if (!is_dc_present(chip) && !is_usb_present(chip) &&
 					!chip->somc_params.apsd.rerun_wait_irq)
@@ -6784,15 +6747,8 @@ static enum power_supply_property smbchg_battery_properties[] = {
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_FV_CFG,
 	POWER_SUPPLY_PROP_FV_CMP_CFG,
-	POWER_SUPPLY_PROP_LRC_ENABLE,
-	POWER_SUPPLY_PROP_LRC_SOCMAX,
-	POWER_SUPPLY_PROP_LRC_SOCMIN,
-	POWER_SUPPLY_PROP_LRC_NOT_STARTUP,
 	POWER_SUPPLY_PROP_BATTERY_TYPE,
 	POWER_SUPPLY_PROP_INT_CLD,
-	POWER_SUPPLY_PROP_SMART_CHARGING_ACTIVATION,
-	POWER_SUPPLY_PROP_SMART_CHARGING_INTERRUPTION,
-	POWER_SUPPLY_PROP_SMART_CHARGING_STATUS,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_STATE,
 	POWER_SUPPLY_PROP_CHGERR_STS,
 #endif
@@ -6830,11 +6786,7 @@ static int smbchg_battery_set_property(struct power_supply *psy,
 			power_supply_changed(chip->batt_psy);
 		break;
 	case POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL:
-#ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-		somc_chg_therm_level_set(chip, val->intval);
-#else
 		smbchg_system_temp_level_set(chip, val->intval);
-#endif
 		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		rc = smbchg_set_fastchg_current_user(chip, val->intval / 1000);
@@ -6870,13 +6822,7 @@ static int smbchg_battery_set_property(struct power_supply *psy,
 		rc = smbchg_dp_dm(chip, val->intval);
 		break;
 	case POWER_SUPPLY_PROP_RERUN_AICL:
-#ifdef CONFIG_QPNP_SMBCHARGER_EXTENSION
-		rc = somc_chg_therm_set_icl(chip);
-		if (rc < 0)
-			pr_err("Couldn't vote thermal ICL rc=%d\n", rc);
-#else
 		smbchg_rerun_aicl(chip);
-#endif
 		break;
 	case POWER_SUPPLY_PROP_RESTRICTED_CHARGING:
 		rc = smbchg_restricted_charging(chip, val->intval);
@@ -6916,22 +6862,6 @@ static int smbchg_battery_set_property(struct power_supply *psy,
 			dev_err(chip->dev,
 				"Couldn't set vfloat compensation rc=%d\n", rc);
 		break;
-	case POWER_SUPPLY_PROP_LRC_ENABLE:
-		chip->somc_params.lrc.enabled = val->intval;
-		somc_chg_lrc_check(chip);
-		break;
-	case POWER_SUPPLY_PROP_LRC_SOCMAX:
-		chip->somc_params.lrc.socmax = (int)val->intval;
-		break;
-	case POWER_SUPPLY_PROP_LRC_SOCMIN:
-		chip->somc_params.lrc.socmin = (int)val->intval;
-		break;
-	case POWER_SUPPLY_PROP_LRC_NOT_STARTUP:
-		chip->somc_params.lrc.fake_capacity = (int)val->intval;
-		if (chip->somc_params.lrc.fake_capacity)
-			chip->somc_params.lrc.hysteresis =
-			FAKE_CAPACITY_HYSTERISIS;
-		break;
 	case POWER_SUPPLY_PROP_MAX_CHARGE_CURRENT:
 		rc = somc_set_fastchg_current_qns(chip, val->intval / 1000);
 		break;
@@ -6939,19 +6869,6 @@ static int smbchg_battery_set_property(struct power_supply *psy,
 		chip->somc_params.daemon.int_cld = (int)val->intval;
 		if (chip->somc_params.daemon.int_cld)
 			power_supply_changed(chip->batt_psy);
-		break;
-	case POWER_SUPPLY_PROP_SMART_CHARGING_ACTIVATION:
-		if (val->intval) {
-			pr_smb(PR_SOMC, "Smart Charging was activated.\n");
-			chip->somc_params.smart.enabled = true;
-		}
-		break;
-	case POWER_SUPPLY_PROP_SMART_CHARGING_INTERRUPTION:
-		if (chip->somc_params.smart.enabled) {
-			chip->somc_params.smart.suspended = (bool)val->intval;
-			rc = somc_chg_smart_set_suspend(chip);
-			power_supply_changed(chip->batt_psy);
-		}
 		break;
 #endif
 	default:
@@ -7121,30 +7038,11 @@ static int smbchg_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_FV_CMP_CFG:
 		val->intval = somc_chg_get_fv_cmp_cfg(chip);
 		break;
-	case POWER_SUPPLY_PROP_LRC_ENABLE:
-		val->intval = chip->somc_params.lrc.enabled;
-		break;
-	case POWER_SUPPLY_PROP_LRC_SOCMAX:
-		val->intval = chip->somc_params.lrc.socmax;
-		break;
-	case POWER_SUPPLY_PROP_LRC_SOCMIN:
-		val->intval = chip->somc_params.lrc.socmin;
-		break;
-	case POWER_SUPPLY_PROP_LRC_NOT_STARTUP:
-		val->intval = chip->somc_params.lrc.fake_capacity;
-		break;
 	case POWER_SUPPLY_PROP_BATTERY_TYPE:
 		val->strval = somc_chg_get_prop_battery_type(chip);
 		break;
 	case POWER_SUPPLY_PROP_INT_CLD:
 		val->intval = chip->somc_params.daemon.int_cld;
-		break;
-	case POWER_SUPPLY_PROP_SMART_CHARGING_ACTIVATION:
-		val->intval = chip->somc_params.smart.enabled;
-		break;
-	case POWER_SUPPLY_PROP_SMART_CHARGING_INTERRUPTION:
-	case POWER_SUPPLY_PROP_SMART_CHARGING_STATUS:
-		val->intval = chip->somc_params.smart.suspended;
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_STATE:
 		val->intval = chip->somc_params.input_current.input_current_ave;

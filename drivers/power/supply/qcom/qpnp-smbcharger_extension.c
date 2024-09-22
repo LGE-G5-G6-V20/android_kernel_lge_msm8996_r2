@@ -51,7 +51,6 @@ enum {
 	ATTR_USB_8V,
 	ATTR_USB_9V,
 	ATTR_FASTCHG_CURRENT,
-	ATTR_LIMIT_USB_5V_LEVEL,
 	ATTR_OUTPUT_BATT_LOG,
 	ATTR_APSD_RERUN_CHECK_DELAY_MS,
 	ATTR_IBAT_VOTER,
@@ -165,10 +164,7 @@ static int somc_chg_get_current_ma(struct smbchg_chip *chip,
 		pr_smb(PR_LGE, "Selected: C-1, CDP\n");
 	} else if (type == POWER_SUPPLY_TYPE_USB_HVDCP) {
 		/* Flow chart: C-5 */
-		current_limit_ma =
-			chip->somc_params.thermal.usb_9v_current_max ?
-			chip->somc_params.thermal.usb_9v_current_max :
-			smbchg_default_hvdcp_icl_ma;
+		current_limit_ma = smbchg_default_hvdcp_icl_ma;
 		pr_smb(PR_LGE, "Selected: C-5, HVDCP\n");
 	} else if (type == POWER_SUPPLY_TYPE_USB_HVDCP_3) {
 		if (chip->typec_current_ma > CURRENT_1500_MA) {
@@ -178,10 +174,7 @@ static int somc_chg_get_current_ma(struct smbchg_chip *chip,
 			pr_smb(PR_LGE, "Selected: C-7, HVDCP3\n");
 		} else if (!chip->typec_current_ma) {
 			/* Flow chart: C-8 */
-			current_limit_ma =
-				chip->somc_params.thermal.usb_9v_current_max ?
-				chip->somc_params.thermal.usb_9v_current_max :
-				smbchg_default_hvdcp3_icl_ma;
+			current_limit_ma = smbchg_default_hvdcp3_icl_ma;
 			pr_smb(PR_LGE, "Selected: C-8, HVDCP3\n");
 		} else {
 			/* Flow chart: C-6 */
@@ -309,91 +302,6 @@ static int somc_chg_get_fv_cmp_cfg(struct smbchg_chip *chip)
 		return ret;
 	}
 	return (int)reg;
-}
-
-#define FULL_CAPACITY		100
-#define DECIMAL_CEIL		100
-static int somc_chg_lrc_get_capacity(struct chg_somc_params *params, int capacity)
-{
-	int ceil, magni;
-
-	if (params->lrc.fake_capacity &&
-	    params->lrc.enabled &&
-	    params->lrc.socmax) {
-		magni = FULL_CAPACITY * DECIMAL_CEIL /
-					params->lrc.socmax;
-		capacity *= magni;
-		ceil = (capacity % DECIMAL_CEIL) ? 1 : 0;
-		capacity = capacity / DECIMAL_CEIL + ceil;
-		if (capacity > FULL_CAPACITY)
-			capacity = FULL_CAPACITY;
-	}
-	return capacity;
-}
-
-static void somc_chg_lrc_vote(struct smbchg_chip *chip, enum somc_lrc_status status)
-{
-	int rc;
-
-	if (status == LRC_CHG_OFF)
-		rc = vote(chip->battchg_suspend_votable, BATTCHG_LRC_EN_VOTER,
-			true, 0);
-	else
-		rc = vote(chip->battchg_suspend_votable, BATTCHG_LRC_EN_VOTER,
-			false, 0);
-
-	if (rc < 0)
-		dev_err(chip->dev,
-			"Couldn't vote for battchg suspend: rc = %d\n", rc);
-}
-
-static void somc_chg_lrc_check(struct smbchg_chip *chip)
-{
-	struct chg_somc_params *params = &chip->somc_params;
-	int rc, soc = 0;
-	enum somc_lrc_status retcode = LRC_DISABLE;
-
-	if (!chip->usb_present && !chip->dc_present)
-		goto exit;
-
-	if (params->lrc.enabled) {
-		if (params->lrc.socmax <= params->lrc.socmin) {
-			pr_err("invalid SOC min:%d max:%d\n",
-						params->lrc.socmin,
-						params->lrc.socmax);
-			goto exit;
-		}
-	} else {
-		if (params->lrc.status == LRC_CHG_OFF)
-			somc_chg_lrc_vote(chip, LRC_CHG_ON);
-		goto exit;
-	}
-
-	rc = get_property_from_fg(chip, POWER_SUPPLY_PROP_CAPACITY, &soc);
-	if (rc) {
-		pr_smb_ext(PR_STATUS, "Couldn't get soc rc = %d\n", rc);
-		goto exit;
-	}
-
-	if (soc >= (params->lrc.socmax +
-				params->lrc.hysteresis))
-		retcode = LRC_CHG_OFF;
-	else if (soc <= params->lrc.socmin)
-		retcode = LRC_CHG_ON;
-	else if (params->lrc.status == LRC_CHG_OFF)
-		retcode = LRC_CHG_OFF;
-	else
-		retcode = LRC_CHG_ON;
-
-	if (retcode != params->lrc.status)
-		somc_chg_lrc_vote(chip, retcode);
-
-	params->lrc.status = retcode;
-	return;
-
-exit:
-	params->lrc.status = LRC_DISABLE;
-	return;
 }
 
 #define UNPLUG_WAKE_PERIOD		(3 * HZ)
@@ -642,18 +550,6 @@ static void somc_chg_temp_status_transition(
 }
 #endif
 
-static bool somc_chg_therm_is_not_charge(
-			struct smbchg_chip *chip, int therm_lvl)
-{
-	if (!chip->thermal_levels || therm_lvl < 0 ||
-	    therm_lvl >= chip->thermal_levels) {
-		pr_err("Invalid thermal level\n");
-		return false;
-	}
-
-	return !chip->somc_params.thermal.current_ma[therm_lvl];
-}
-
 static int somc_hvdcp_detect(struct smbchg_chip *chip)
 {
 	int rc = 0;
@@ -703,24 +599,9 @@ static bool somc_chg_therm_is_hvdcp_limit(struct smbchg_chip *chip)
 		return false;
 	}
 
-	if (!params->thermal.limit_usb5v_lvl ||
-	    therm_lvl < params->thermal.limit_usb5v_lvl)
-		enable = false;
-
 	pr_smb_ext(PR_THERM, "HVDCP limit is %s\n",
 			enable ? "enable" : "disable");
 	return enable;
-}
-
-static bool somc_chg_is_charging_hvdcp(struct smbchg_chip *chip)
-{
-	bool hvdcp = false;
-
-	if (!somc_chg_therm_is_hvdcp_limit(chip) && is_hvdcp_present(chip))
-		hvdcp = true;
-
-	pr_smb_ext(PR_THERM, "charging_hvdcp %s\n", hvdcp ? "true" : "false");
-	return hvdcp;
 }
 
 static void somc_chg_therm_set_hvdcp_en(struct smbchg_chip *chip)
@@ -759,127 +640,6 @@ static void somc_chg_therm_set_hvdcp_en(struct smbchg_chip *chip)
 		pr_err("Failed to force 9V HVDCP=%d\n", rc);
 }
 
-#define ERR_USBIN_VOLTAGE 9000000
-static int somc_chg_get_usbin_voltage(struct smbchg_chip *chip)
-{
-	struct somc_hvdcp3 *params = &chip->somc_params.hvdcp3;
-	int rc = 0;
-	struct qpnp_vadc_result adc_result;
-
-	if (IS_ERR_OR_NULL(params->usbin_vadc_dev)) {
-		params->usbin_vadc_dev = qpnp_get_vadc(chip->dev, "usbin");
-		if (IS_ERR(params->usbin_vadc_dev)) {
-			rc = PTR_ERR(params->usbin_vadc_dev);
-			if (rc != -EPROBE_DEFER)
-				dev_err(chip->dev,
-					"Couldn't get vadc(USBIN) rc=%d\n",
-					rc);
-			goto err;
-		}
-	}
-	rc = qpnp_vadc_read(params->usbin_vadc_dev, USBIN, &adc_result);
-	if (rc) {
-		dev_err(chip->dev, "Couldn't vadc_read(USBIN) rc=%d\n", rc);
-		goto err;
-	}
-	return (int)adc_result.physical;
-err:
-	return ERR_USBIN_VOLTAGE;
-}
-
-#define HVDCP3_THERM_USBIN_HYS_5V 5500000
-#define HVDCP3_THERM_USBIN_HYS_6V 6500000
-#define HVDCP3_THERM_USBIN_HYS_7V 7500000
-#define HVDCP3_THERM_USBIN_HYS_8V 8500000
-static int somc_chg_therm_get_therm_mitigation(struct smbchg_chip *chip)
-{
-	struct chg_somc_params *params = &chip->somc_params;
-	int therm_lvl = chip->therm_lvl_sel;
-	int therm_ma = 0;
-	bool is_hvdcp = false;
-
-	params->hvdcp3.usbin_mv = somc_chg_get_usbin_voltage(chip);
-	is_hvdcp = somc_chg_is_charging_hvdcp(chip);
-	if (params->hvdcp3.hvdcp3_detected) {
-		if (params->hvdcp3.usbin_mv < HVDCP3_THERM_USBIN_HYS_5V)
-			therm_ma = (int)params->thermal.usb_5v[therm_lvl];
-		else if (params->hvdcp3.usbin_mv < HVDCP3_THERM_USBIN_HYS_6V)
-			therm_ma = (int)params->thermal.usb_6v[therm_lvl];
-		else if (params->hvdcp3.usbin_mv < HVDCP3_THERM_USBIN_HYS_7V)
-			therm_ma = (int)params->thermal.usb_7v[therm_lvl];
-		else if (params->hvdcp3.usbin_mv < HVDCP3_THERM_USBIN_HYS_8V)
-			therm_ma = (int)params->thermal.usb_8v[therm_lvl];
-		else
-			therm_ma = (int)params->thermal.usb_9v[therm_lvl];
-	} else if (is_hvdcp) {
-		therm_ma = (int)params->thermal.usb_9v[therm_lvl];
-	} else {
-		therm_ma = (int)params->thermal.usb_5v[therm_lvl];
-	}
-	pr_smb_ext(PR_SOMC,
-		"therm_lvl=%d, usbin=%d, hvdcp3=%d, hvdcp=%d, therm_ma=%d\n",
-					therm_lvl, params->hvdcp3.usbin_mv,
-					(int)params->hvdcp3.hvdcp3_detected,
-					is_hvdcp, therm_ma);
-	return therm_ma;
-}
-
-static int somc_chg_therm_set_fastchg_ma(struct smbchg_chip *chip)
-{
-	int rc = 0;
-	int fastchg_ma =
-		(int)chip->somc_params.thermal.current_ma[chip->therm_lvl_sel];
-
-	pr_smb_ext(PR_THERM,
-		"fastchg-ma changed to %dma for thermal\n", fastchg_ma);
-	if (fastchg_ma)
-		rc = vote(chip->fcc_votable,
-			THERMAL_FCC_VOTER, true, fastchg_ma);
-	else
-		rc = vote(chip->fcc_votable, THERMAL_FCC_VOTER, false, 0);
-	if (rc < 0)
-		pr_err("Couldn't vote for fastchg current rc=%d\n", rc);
-	return rc;
-}
-
-static int somc_chg_therm_set_icl(struct smbchg_chip *chip)
-{
-	int rc;
-	int thermal_icl_ma =
-		somc_chg_therm_get_therm_mitigation(chip);
-
-	if (!thermal_icl_ma)
-		return 0;
-
-	rc = vote(chip->usb_icl_votable, THERMAL_ICL_VOTER, true,
-				thermal_icl_ma);
-	if (rc < 0)
-		pr_err("Couldn't vote for USB thermal ICL rc=%d\n", rc);
-
-	rc = vote(chip->dc_icl_votable, THERMAL_ICL_VOTER, true,
-				thermal_icl_ma);
-	if (rc < 0)
-		pr_err("Couldn't vote for DC thermal ICL rc=%d\n", rc);
-
-	smbchg_rerun_aicl(chip);
-	return rc;
-}
-
-static int somc_chg_therm_set_mitigation_params(struct smbchg_chip *chip)
-{
-	int rc;
-
-	if (is_usb_present(chip))
-		somc_chg_therm_set_hvdcp_en(chip);
-
-	rc = somc_chg_therm_set_icl(chip);
-	if (rc < 0)
-		pr_err("Couldn't vote thermal ICL rc=%d\n", rc);
-
-	rc = somc_chg_therm_set_fastchg_ma(chip);
-	return rc;
-}
-
 static bool somc_chg_is_hvdcp_present(struct smbchg_chip *chip)
 {
 	int rc;
@@ -903,25 +663,6 @@ static bool somc_chg_is_hvdcp_present(struct smbchg_chip *chip)
 		return true;
 
 	return false;
-}
-
-#define THERM_LEVEL_SET_DELAY_MS 500
-static void somc_chg_therm_level_set(struct smbchg_chip *chip, int lvl_sel)
-{
-	struct somc_thermal_mitigation *params = &chip->somc_params.thermal;
-
-	params->lvl_sel_temp = lvl_sel;
-	schedule_delayed_work(&params->therm_level_set_work,
-				msecs_to_jiffies(THERM_LEVEL_SET_DELAY_MS));
-}
-
-static void somc_chg_therm_level_set_work(struct work_struct *work)
-{
-	struct smbchg_chip *chip = container_of(work, struct smbchg_chip,
-			somc_params.thermal.therm_level_set_work.work);
-	struct somc_thermal_mitigation *params = &chip->somc_params.thermal;
-
-	smbchg_system_temp_level_set(chip, params->lvl_sel_temp);
 }
 
 #define SRC_DET_STS	BIT(2)
@@ -1005,146 +746,6 @@ static void somc_chg_apsd_rerun_work(struct work_struct *work)
 		dev_err(chip->dev, "APSD rerun error rc=%d\n", rc);
 }
 
-static unsigned int *somc_chg_therm_create_tb(struct device *dev,
-		struct device_node *node, int *size,
-		const char *thermal)
-{
-	int rc = 0;
-	int thermal_levels, thermal_size;
-	unsigned int *thermal_tb;
-
-	if (of_find_property(node, thermal, &thermal_levels)) {
-		thermal_size = thermal_levels / sizeof(int);
-		if (!thermal_levels || !thermal_size) {
-			dev_err(dev, "Invalid thermal parameters\n");
-			*size = -EINVAL;
-			return NULL;
-		}
-		thermal_tb = devm_kzalloc(dev, thermal_levels, GFP_KERNEL);
-		if (thermal_tb == NULL) {
-			dev_err(dev, "thermal mitigation kzalloc() failed\n");
-			*size = -ENOMEM;
-			return NULL;
-		}
-		rc = of_property_read_u32_array(node,
-				thermal,
-				thermal_tb,
-				thermal_size);
-		if (rc) {
-			dev_err(dev, "Couldn't read threm limits rc=%d\n", rc);
-			devm_kfree(dev, thermal_tb);
-			*size = rc;
-			return NULL;
-		}
-		*size = thermal_size;
-		return thermal_tb;
-	}
-	*size = 0;
-	return NULL;
-}
-
-static void somc_chg_therm_remove_tb(struct smbchg_chip *chip)
-{
-	struct chg_somc_params *params = &chip->somc_params;
-
-	if (params->thermal.usb_5v)
-		devm_kfree(chip->dev, params->thermal.usb_5v);
-	if (params->thermal.usb_6v)
-		devm_kfree(chip->dev, params->thermal.usb_6v);
-	if (params->thermal.usb_7v)
-		devm_kfree(chip->dev, params->thermal.usb_7v);
-	if (params->thermal.usb_8v)
-		devm_kfree(chip->dev, params->thermal.usb_8v);
-	if (params->thermal.usb_9v)
-		devm_kfree(chip->dev, params->thermal.usb_9v);
-	if (params->thermal.current_ma)
-		devm_kfree(chip->dev, params->thermal.current_ma);
-	params->thermal.usb_5v = NULL;
-	params->thermal.usb_6v = NULL;
-	params->thermal.usb_7v = NULL;
-	params->thermal.usb_8v = NULL;
-	params->thermal.usb_9v = NULL;
-	params->thermal.current_ma = NULL;
-}
-
-static int somc_chg_therm_get_dt(struct smbchg_chip *chip,
-			struct device_node *node)
-{
-	struct chg_somc_params *params = &chip->somc_params;
-	int size, rc = 0;
-
-	if (!node) {
-		dev_err(chip->dev, "device tree info. missing\n");
-		rc = -EINVAL;
-		goto exit;
-	}
-	/* thermal_mitigation_usb_5v */
-	params->thermal.usb_5v = somc_chg_therm_create_tb(
-				chip->dev,
-				node,
-				&size,
-				"somc,thermal-mitigation-usb-5v");
-	if (!params->thermal.usb_5v)
-		goto err;
-
-	/* thermal_mitigation_usb_6v */
-	params->thermal.usb_6v = somc_chg_therm_create_tb(
-				chip->dev,
-				node,
-				&size,
-				"somc,thermal-mitigation-usb-6v");
-	if (!params->thermal.usb_6v)
-		goto err;
-
-	/* thermal_mitigation_usb_7v */
-	params->thermal.usb_7v = somc_chg_therm_create_tb(
-				chip->dev,
-				node,
-				&size,
-				"somc,thermal-mitigation-usb-7v");
-	if (!params->thermal.usb_7v)
-		goto err;
-
-	/* thermal_mitigation_usb_8v */
-	params->thermal.usb_8v = somc_chg_therm_create_tb(
-				chip->dev,
-				node,
-				&size,
-				"somc,thermal-mitigation-usb-8v");
-	if (!params->thermal.usb_8v)
-		goto err;
-
-	/* thermal_mitigation_usb_9v */
-	params->thermal.usb_9v = somc_chg_therm_create_tb(
-				chip->dev,
-				node,
-				&size,
-				"somc,thermal-mitigation-usb-9v");
-	if (!params->thermal.usb_9v)
-		goto err;
-
-	/* thermal_fastchg_current_ma */
-	params->thermal.current_ma = somc_chg_therm_create_tb(
-				chip->dev,
-				node,
-				&size,
-				"somc,thermal-engine-fastchg-current");
-	if (!params->thermal.current_ma)
-		goto err;
-
-	chip->thermal_levels = size;
-	chip->thermal_mitigation = params->thermal.usb_5v;
-	return rc;
-
-err:
-	somc_chg_therm_remove_tb(chip);
-	rc = size;
-exit:
-	chip->thermal_levels = 0;
-	chip->thermal_mitigation = NULL;
-	return rc;
-}
-
 static void somc_chg_remove_work(struct work_struct *work)
 {
 	struct somc_usb_remove *usb_remove = container_of(work,
@@ -1201,50 +802,6 @@ static int somc_set_fastchg_current_qns(struct smbchg_chip *chip,
 	return rc;
 }
 
-#define SMART_CHARGE_WDOG_DELAY_MS      (30 * 60 * 1000) /* 30min */
-static int somc_chg_smart_set_suspend(struct smbchg_chip *chip)
-{
-	struct somc_smart_charge *smart_params = &chip->somc_params.smart;
-	int rc = 0;
-
-	if (!smart_params->enabled) {
-		pr_err("Couldn't set smart charge voter due to unactivated\n");
-		goto exit;
-	}
-
-	rc = vote(chip->battchg_suspend_votable, BATTCHG_SMART_EN_VOTER,
-						smart_params->suspended, 0);
-	if (rc < 0) {
-		pr_err("Couldn't vote en rc %d\n", rc);
-		goto exit;
-	}
-
-	pr_smb(PR_SOMC, "voted for smart charging (%d).\n",
-					chip->somc_params.smart.suspended);
-	cancel_delayed_work_sync(&smart_params->wdog_work);
-	if (smart_params->suspended) {
-		schedule_delayed_work(&smart_params->wdog_work,
-			msecs_to_jiffies(SMART_CHARGE_WDOG_DELAY_MS));
-	}
-exit:
-	return rc;
-}
-
-#define HVDCP3_THERM_PREPARE_TIMEOUT_CNT_MAX 30
-static bool somc_chg_hvdcp3_is_preparing(struct smbchg_chip *chip)
-{
-	bool ret;
-	int cnt = chip->somc_params.hvdcp3.thermal_timeout_cnt++;
-
-	if (cnt > HVDCP3_THERM_PREPARE_TIMEOUT_CNT_MAX) {
-		ret = false;
-		pr_smb(PR_SOMC, "hvdcp3 preparing time out\n");
-	} else {
-		ret = chip->somc_params.hvdcp3.preparing;
-	}
-	return ret;
-}
-
 static void somc_chg_hvdcp3_preparing_set(struct smbchg_chip *chip,
 							bool enabled)
 {
@@ -1269,80 +826,6 @@ static void somc_chg_hvdcp3_therm_adjust_stop(struct smbchg_chip *chip)
 	hvdcp3_params->thermal_pulse_cnt = 0;
 	pr_smb(PR_SOMC, "cancel thermal_hvdcp3_adjust_work\n");
 	cancel_delayed_work_sync(&hvdcp3_params->thermal_hvdcp3_adjust_work);
-}
-
-static void somc_chg_hvdcp3_thermal_adjust_work(struct work_struct *work)
-{
-	int rc;
-	struct smbchg_chip *chip = container_of(work,
-			struct smbchg_chip,
-			somc_params.hvdcp3.thermal_hvdcp3_adjust_work.work);
-	struct somc_hvdcp3 *hvdcp3 = &chip->somc_params.hvdcp3;
-	bool pulsed = false;
-	int limit_usb5v_lvl = chip->somc_params.thermal.limit_usb5v_lvl;
-
-	if (!hvdcp3->hvdcp3_detected)
-		return;
-
-	/* if level is higher than limit_usb5v_lvl, decrease voltage to 5V */
-	if (chip->therm_lvl_sel >= limit_usb5v_lvl &&
-	    hvdcp3->thermal_pulse_cnt > 0) {
-		if (chip->schg_version == QPNP_SCHG)
-			rc = set_dpdm_psy(chip,
-					POWER_SUPPLY_DP_DM_DM_PULSE);
-		else
-			rc = smbchg_dm_pulse_lite(chip);
-		if (!rc)
-			hvdcp3->thermal_pulse_cnt--;
-
-		smbchg_rerun_aicl(chip);
-		power_supply_changed(chip->batt_psy);
-		pulsed = true;
-		somc_chg_hvdcp3_therm_adjust_start(chip,
-					HVDCP3_THERM_ADJUST_POL_MS);
-	/* if level is lower than limit_usb5v_lvl, increase voltage to 5V */
-	} else if (chip->therm_lvl_sel < limit_usb5v_lvl &&
-		   chip->pulse_cnt > hvdcp3->thermal_pulse_cnt) {
-		if (chip->schg_version == QPNP_SCHG)
-			rc = set_dpdm_psy(chip,
-					POWER_SUPPLY_DP_DM_DP_PULSE);
-		else
-			rc = smbchg_dp_pulse_lite(chip);
-		if (!rc)
-			hvdcp3->thermal_pulse_cnt++;
-
-		smbchg_rerun_aicl(chip);
-		power_supply_changed(chip->batt_psy);
-		pulsed = true;
-		somc_chg_hvdcp3_therm_adjust_start(chip,
-					HVDCP3_THERM_ADJUST_POL_MS);
-	}
-	pr_smb(PR_SOMC, "lv=%d, pulse_cnt=%d, thermal_pulse_cnt=%d\n",
-					chip->therm_lvl_sel, chip->pulse_cnt,
-					hvdcp3->thermal_pulse_cnt);
-	if (!pulsed) {
-		/* change table and rerun AICL */
-		rc = somc_chg_therm_set_icl(chip);
-		if (rc < 0)
-			pr_err("Couldn't vote thermal ICL rc=%d\n", rc);
-	}
-}
-
-static void smbchg_smart_charge_wdog_work(struct work_struct *work)
-{
-	struct smbchg_chip *chip = container_of(work,
-				struct smbchg_chip,
-				somc_params.smart.wdog_work.work);
-
-	pr_smb(PR_SOMC, "Smart Charge Watchdog timer has expired.\n");
-
-	mutex_lock(&chip->somc_params.smart.smart_charge_lock);
-	vote(chip->battchg_suspend_votable, BATTCHG_SMART_EN_VOTER,
-		false, 0);
-	chip->somc_params.smart.suspended = false;
-	mutex_unlock(&chip->somc_params.smart.smart_charge_lock);
-
-	power_supply_changed(chip->batt_psy);
 }
 
 #define INPUT_CURRENT_STATE_START_DELAY_MS	10000
@@ -1442,8 +925,6 @@ static ssize_t somc_chg_output_voter_param(struct smbchg_chip *chip,
 			PRINTVOTE(buf, size, votable, BATTCHG_USER_EN_VOTER);
 			PRINTVOTE(buf, size, votable,
 					BATTCHG_UNKNOWN_BATTERY_EN_VOTER);
-			PRINTVOTE(buf, size, votable, BATTCHG_LRC_EN_VOTER);
-			PRINTVOTE(buf, size, votable, BATTCHG_SMART_EN_VOTER);
 			break;
 		default:
 			break;
@@ -1531,12 +1012,6 @@ static ssize_t somc_chg_param_show(struct device *dev,
 static ssize_t somc_chg_param_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count);
-static ssize_t somc_chg_therm_show_tb(struct device *dev,
-				struct device_attribute *attr,
-				char *buf);
-static ssize_t somc_chg_therm_store_tb(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t count);
 
 static struct device_attribute somc_chg_attrs[] = {
 	__ATTR(fv_sts,			S_IRUGO, somc_chg_param_show, NULL),
@@ -1564,24 +1039,6 @@ static struct device_attribute somc_chg_attrs[] = {
 	__ATTR(usb_online,		S_IRUGO, somc_chg_param_show, NULL),
 	__ATTR(usb_present,		S_IRUGO, somc_chg_param_show, NULL),
 	__ATTR(bat_temp_status,		S_IRUGO, somc_chg_param_show, NULL),
-	__ATTR(therm_miti_usb5v,	S_IRUGO|S_IWUSR,
-					somc_chg_therm_show_tb,
-					somc_chg_therm_store_tb),
-	__ATTR(therm_miti_usb6v,	S_IRUGO|S_IWUSR,
-					somc_chg_therm_show_tb,
-					somc_chg_therm_store_tb),
-	__ATTR(therm_miti_usb7v,	S_IRUGO|S_IWUSR,
-					somc_chg_therm_show_tb,
-					somc_chg_therm_store_tb),
-	__ATTR(therm_miti_usb8v,	S_IRUGO|S_IWUSR,
-					somc_chg_therm_show_tb,
-					somc_chg_therm_store_tb),
-	__ATTR(therm_miti_usb9v,	S_IRUGO|S_IWUSR,
-					somc_chg_therm_show_tb,
-					somc_chg_therm_store_tb),
-	__ATTR(fast_chg_current,	S_IRUGO|S_IWUSR,
-					somc_chg_therm_show_tb,
-					somc_chg_therm_store_tb),
 	__ATTR(limit_usb5v_level,	S_IRUGO|S_IWUSR,
 					somc_chg_param_show,
 					somc_chg_param_store),
@@ -1813,10 +1270,6 @@ static ssize_t somc_chg_param_show(struct device *dev,
 		size = scnprintf(buf, PAGE_SIZE, "%d\n",
 				params->temp.status);
 		break;
-	case ATTR_LIMIT_USB_5V_LEVEL:
-		size = scnprintf(buf, PAGE_SIZE, "%d\n",
-				params->thermal.limit_usb5v_lvl);
-		break;
 	case ATTR_OUTPUT_BATT_LOG:
 		size = scnprintf(buf, PAGE_SIZE, "%d\n",
 				params->batt_log.output_period);
@@ -1881,14 +1334,6 @@ static ssize_t somc_chg_param_store(struct device *dev,
 	int ret = -EINVAL;
 
 	switch (off) {
-	case ATTR_LIMIT_USB_5V_LEVEL:
-		ret = kstrtoint(buf, 10, &params->thermal.limit_usb5v_lvl);
-		if (ret) {
-			pr_err("Can't write limit_usb5v_lvl: %d\n", ret);
-			return ret;
-		}
-		somc_chg_therm_set_hvdcp_en(chip);
-		break;
 	case ATTR_OUTPUT_BATT_LOG:
 		ret = kstrtoint(buf, 10, &params->batt_log.output_period);
 		if (ret) {
@@ -1928,147 +1373,6 @@ static void somc_chg_init(struct chg_somc_params *params)
 	pr_smb_ext(PR_INFO, "somc chg init success\n");
 }
 
-static ssize_t somc_chg_therm_show_tb(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct smbchg_chip *chip = dev_get_drvdata(dev);
-	struct chg_somc_params *params = &chip->somc_params;
-	const ptrdiff_t off = attr - somc_chg_attrs;
-	ssize_t size = 0;
-	int i;
-	unsigned int *therm_table;
-
-	switch (off) {
-	case ATTR_USB_5V:
-		if (!params->thermal.usb_5v)
-			goto err;
-		therm_table = params->thermal.usb_5v;
-		break;
-	case ATTR_USB_6V:
-		if (!params->thermal.usb_6v)
-			goto err;
-		therm_table = params->thermal.usb_6v;
-		break;
-	case ATTR_USB_7V:
-		if (!params->thermal.usb_7v)
-			goto err;
-		therm_table = params->thermal.usb_7v;
-		break;
-	case ATTR_USB_8V:
-		if (!params->thermal.usb_8v)
-			goto err;
-		therm_table = params->thermal.usb_8v;
-		break;
-	case ATTR_USB_9V:
-		if (!params->thermal.usb_9v)
-			goto err;
-		therm_table = params->thermal.usb_9v;
-		break;
-	case ATTR_FASTCHG_CURRENT:
-		if (!params->thermal.current_ma)
-			goto err;
-		therm_table = params->thermal.current_ma;
-		break;
-	default:
-		goto err;
-		break;
-	}
-
-	for (i = 0; i < chip->thermal_levels; i++)
-		size += scnprintf(buf + size, PAGE_SIZE - size,
-			"%d,", therm_table[i]);
-	if (0 < size)
-		buf[size - 1] = '\n';
-	return size;
-
-err:
-	size = scnprintf(buf, PAGE_SIZE, "Not supported\n");
-	return size;
-}
-
-#define THERM_CHAR_NUM 255
-static ssize_t somc_chg_therm_store_tb(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t count)
-{
-	struct smbchg_chip *chip = dev_get_drvdata(dev);
-	struct chg_somc_params *params = &chip->somc_params;
-	const ptrdiff_t off = attr - somc_chg_attrs;
-	unsigned int *therm;
-	int i, rc;
-	unsigned int size;
-	char str[THERM_CHAR_NUM];
-	char *tok, *sp = str;
-	long param;
-
-	if (!chip->thermal_levels) {
-		pr_err("thermal mitigation not supported\n");
-		return count;
-	}
-
-	size = chip->thermal_levels;
-	strlcpy(str, buf, sizeof(str));
-
-	therm = devm_kzalloc(dev, size * sizeof(int), GFP_KERNEL);
-	if (therm == NULL) {
-		pr_err("thermal table kzalloc() failed\n");
-		return count;
-	}
-
-	memset(therm, 0x00, size * sizeof(int));
-	for (i = 0; (tok = strsep(&sp, ",")) != NULL && i < size; i++) {
-		if (*tok != '\0') {
-			rc = kstrtol(tok, 10, &param);
-			if (rc) {
-				pr_err("Invalid parameter\n");
-				goto exit;
-			}
-			therm[i] = (unsigned int)param;
-		}
-	}
-
-	switch (off) {
-	case ATTR_USB_5V:
-		if (params->thermal.usb_5v)
-			memcpy(params->thermal.usb_5v, therm,
-				sizeof(int) * size);
-		break;
-	case ATTR_USB_6V:
-		if (params->thermal.usb_6v)
-			memcpy(params->thermal.usb_6v, therm,
-				sizeof(int) * size);
-		break;
-	case ATTR_USB_7V:
-		if (params->thermal.usb_7v)
-			memcpy(params->thermal.usb_7v, therm,
-				sizeof(int) * size);
-		break;
-	case ATTR_USB_8V:
-		if (params->thermal.usb_8v)
-			memcpy(params->thermal.usb_8v, therm,
-				sizeof(int) * size);
-		break;
-	case ATTR_USB_9V:
-		if (params->thermal.usb_9v)
-			memcpy(params->thermal.usb_9v, therm,
-				sizeof(int) * size);
-		break;
-	case ATTR_FASTCHG_CURRENT:
-		if (params->thermal.current_ma) {
-			memcpy(params->thermal.current_ma, therm,
-				sizeof(int) * size);
-			(void)somc_chg_therm_set_fastchg_ma(chip);
-		}
-		break;
-	default:
-		break;
-	}
-exit:
-	devm_kfree(dev, therm);
-	return count;
-}
-
 #define SOMC_OF_PROP_READ(dev, node, prop, dt_property, retval, optional) \
 do {									\
 	if (retval)							\
@@ -2087,33 +1391,6 @@ do {									\
 				" property rc = %d\n", rc);		\
 } while (0)
 
-static int somc_chg_set_step_charge_params(struct smbchg_chip *chip,
-			struct device_node *node)
-{
-	struct chg_somc_params *params = &chip->somc_params;
-	int rc = 0;
-	bool enabled;
-
-	enabled = of_property_read_bool(node, "somc,step-charge-en");
-	if (!enabled) {
-		pr_smb_ext(PR_STEP_CHG, "step charge no parameter\n");
-		return 0;
-	}
-
-	params->step_chg.enabled = enabled;
-	SOMC_OF_PROP_READ(chip->dev, node,
-		params->step_chg.thresh,
-		"step-charge-threshold", rc, 1);
-	SOMC_OF_PROP_READ(chip->dev, node,
-		params->step_chg.current_ma,
-		"step-charge-current-ma", rc, 1);
-	pr_smb_ext(PR_STEP_CHG,
-		"step charge: enabled=%d thresh=%d current_ma=%d\n",
-		params->step_chg.enabled, params->step_chg.thresh,
-		params->step_chg.current_ma);
-	return rc;
-}
-
 static int somc_chg_smb_parse_dt(struct smbchg_chip *chip,
 			struct device_node *node)
 {
@@ -2125,18 +1402,6 @@ static int somc_chg_smb_parse_dt(struct smbchg_chip *chip,
 		return -EINVAL;
 	}
 
-	SOMC_OF_PROP_READ(chip->dev, node,
-		params->thermal.usb_9v_current_max,
-		"usb-9v-current-max", rc, 1);
-	SOMC_OF_PROP_READ(chip->dev, node,
-		params->temp.warm_current_ma,
-		"fastchg-warm-current-ma", rc, 1);
-	SOMC_OF_PROP_READ(chip->dev, node,
-		params->temp.cool_current_ma,
-		"fastchg-cool-current-ma", rc, 1);
-	SOMC_OF_PROP_READ(chip->dev, node,
-		params->thermal.limit_usb5v_lvl,
-		"limit-usb-5v-level", rc, 1);
 	SOMC_OF_PROP_READ(chip->dev, node,
 		params->chg_det.typec_current_max,
 		"typec-current-max", rc, 1);
@@ -2178,10 +1443,6 @@ static int somc_chg_smb_parse_dt(struct smbchg_chip *chip,
 	}
 #endif
 
-	if (!rc)
-		rc = somc_chg_set_step_charge_params(chip, node);
-	if (!rc)
-		rc = somc_chg_therm_get_dt(chip, node);
 	return rc;
 }
 
@@ -2240,18 +1501,10 @@ static int somc_chg_register(struct smbchg_chip *chip)
 	}
 	wake_lock_init(&params->unplug_wakelock, WAKE_LOCK_SUSPEND,
 							"unplug_wakelock");
-	INIT_DELAYED_WORK(&params->thermal.therm_level_set_work,
-					somc_chg_therm_level_set_work);
 	INIT_DELAYED_WORK(&params->usb_remove.work, somc_chg_remove_work);
 	INIT_DELAYED_WORK(&params->batt_log.work, batt_log_work);
-	INIT_DELAYED_WORK(&params->smart.wdog_work,
-					smbchg_smart_charge_wdog_work);
-	INIT_DELAYED_WORK(&params->hvdcp3.thermal_hvdcp3_adjust_work,
-					somc_chg_hvdcp3_thermal_adjust_work);
 	INIT_DELAYED_WORK(&params->input_current.input_current_work,
 					somc_chg_input_current_state);
-
-	mutex_init(&params->smart.smart_charge_lock);
 
 	pr_smb_ext(PR_INFO, "somc chg register success\n");
 	return 0;

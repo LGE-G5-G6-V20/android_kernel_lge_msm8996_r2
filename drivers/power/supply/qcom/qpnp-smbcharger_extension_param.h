@@ -19,25 +19,6 @@
 
 #include <linux/wakelock.h>
 
-enum somc_lrc_status {
-	LRC_DISABLE,
-	LRC_CHG_OFF,
-	LRC_CHG_ON,
-};
-
-struct somc_thermal_mitigation {
-	int			usb_9v_current_max;
-	unsigned int		*usb_5v;
-	unsigned int		*usb_6v;
-	unsigned int		*usb_7v;
-	unsigned int		*usb_8v;
-	unsigned int		*usb_9v;
-	unsigned int		*current_ma;
-	int			limit_usb5v_lvl;
-	int			lvl_sel_temp;
-	struct delayed_work	therm_level_set_work;
-};
-
 struct somc_low_battery {
 	bool			shutdown_enabled;
 };
@@ -94,13 +75,6 @@ struct somc_apsd {
 	bool			rerun_wait_irq;
 };
 
-struct somc_smart_charge {
-	bool			enabled;
-	bool			suspended;
-	struct delayed_work	wdog_work;
-	struct mutex		smart_charge_lock;
-};
-
 struct somc_chg_det {
 	bool			settled_not_hvdcp;
 	int			typec_current_max;
@@ -147,7 +121,6 @@ struct batt_temp_thresholds {
 #endif
 
 struct chg_somc_params {
-	struct somc_thermal_mitigation	thermal;
 	struct somc_low_battery		low_batt;
 	struct somc_temp_state		temp;
 	struct somc_step_chg		step_chg;
@@ -158,7 +131,6 @@ struct chg_somc_params {
 	struct somc_batt_log		batt_log;
 	struct somc_daemon		daemon;
 	struct somc_apsd	apsd;
-	struct somc_smart_charge	smart;
 	struct somc_chg_det		chg_det;
 	struct somc_hvdcp3		hvdcp3;
 	struct somc_input_current_state	input_current;
