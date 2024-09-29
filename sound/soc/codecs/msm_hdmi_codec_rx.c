@@ -434,14 +434,6 @@ static int msm_ext_disp_audio_codec_rx_probe(struct snd_soc_codec *codec)
 		return -ENODEV;
 	}
 
-	if (msm_ext_disp_register_audio_codec(codec_data->ext_disp_core_pdev,
-				&codec_data->ext_disp_ops)) {
-		dev_err(codec->dev, "%s(): can't register with ext disp core",
-				__func__);
-		kfree(codec_data);
-		return -ENODEV;
-	}
-
 	dev_set_drvdata(codec->dev, codec_data);
 
 	dev_dbg(codec->dev, "%s(): registered %s with ext disp core\n",
